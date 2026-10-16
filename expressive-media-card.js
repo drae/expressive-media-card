@@ -39,6 +39,7 @@
  */
 
 (() => {
+  const VERSION = "0.1.1";
   const OFF = new Set(["off", "unavailable", "unknown", "standby"]);
   const ACTIVE = new Set(["playing", "paused"]);
   const BBFC = new Set(["U", "PG", "12A", "12", "15", "18", "R18"]);
@@ -267,7 +268,7 @@
       if (src === c.live_source || tv.attributes.media_content_type === "channel") {
         const channel = tv.attributes.media_title ?? src;
         const g = this._guide(channel, now);
-        const logo = g && imageUrl(this._state(c.logo));
+        const logo = g && this._fresh(c.logo, c.guide) ? imageUrl(this._state(c.logo)) : null;
         const chans = [
           { icon: "mdi:chevron-down", label: "Channel down", call: [c.entity, "media_previous_track"] },
           { icon: "mdi:chevron-up", label: "Channel up", call: [c.entity, "media_next_track"] },
@@ -294,6 +295,13 @@
         progress: null,
         controls: [{ ...this._playPause(playing, paused, true), call: [c.entity, "media_play_pause"] }],
       };
+    }
+
+    // The logo image updates just after the guide; until it has, it still holds the last channel's logo.
+    _fresh(image, after) {
+      const i = this._state(image), g = this._state(after);
+      const ti = Date.parse(i?.last_updated ?? ""), tg = Date.parse(g?.last_updated ?? "");
+      return Number.isNaN(ti) || Number.isNaN(tg) || ti >= tg;
     }
 
     // Now and next from the guide sensors, when they describe the channel on screen and the times fit.
@@ -474,6 +482,7 @@
   `;
 
   if (!customElements.get("expressive-media-card")) {
+    console.info(`%c EXPRESSIVE-MEDIA-CARD %c ${VERSION} `, "background:#c97e0b;color:#fff;font-weight:600", "background:#28282a;color:#fff");
     customElements.define("expressive-media-card", ExpressiveMediaCard);
     window.customCards = window.customCards || [];
     window.customCards.push({

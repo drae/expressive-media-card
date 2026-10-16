@@ -108,6 +108,14 @@ ok(/^\d\d:\d\d$/.test(text(c, ".t0")) && /^\d\d:\d\d$/.test(text(c, ".t1")), "li
 ok(Math.abs(parseFloat($(c, ".progress i").style.width) - 20) < 1, "live: progress through the programme: " + $(c, ".progress i").style.width);
 ok($(c, ".logo").style.backgroundImage.includes("image.logo") && $(c, ".blurred").style.backgroundImage.includes("image.logo"), "live: sharp and blurred logo");
 ok(!$(c, ".logo").classList.contains("tile"), "live: logo is not a tile");
+// the guide has moved on but the logo image hasn't caught up: no logo rather than the last channel's
+states["sensor.guide"].last_updated = "2026-10-17T00:12:25.765Z";
+states["image.logo"].last_updated = "2026-10-17T00:12:15.000Z";
+c.hass = hass();
+ok(!$(c, ".logo").style.backgroundImage, "stale logo image is not shown");
+states["image.logo"].last_updated = "2026-10-17T00:12:25.766Z";
+c.hass = hass();
+ok($(c, ".logo").style.backgroundImage.includes("image.logo"), "logo shown once the image has updated");
 const logo1 = $(c, ".logo").style.backgroundImage;
 states["image.logo"] = { state: "2026-10-17T00:06", attributes: { entity_picture: "/api/image_proxy/image.logo?token=a" } };
 c.hass = hass();
