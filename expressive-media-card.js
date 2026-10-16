@@ -45,7 +45,7 @@
  */
 
 (() => {
-  const VERSION = "0.2.1";
+  const VERSION = "0.2.2";
   const OFF = new Set(["off", "unavailable", "unknown", "standby"]);
   const ACTIVE = new Set(["playing", "paused"]);
   const BBFC = new Set(["U", "PG", "12A", "12", "15", "18", "R18"]);
@@ -596,7 +596,8 @@
   const CSS = `
     /* flow-root stops the heading's -16px collapsing through the block, so it straddles the block's edge */
     :host { display: flow-root; }
-    .heading { display: flex; align-items: center; height: 32px; margin-top: -16px; min-width: 0; }
+    /* margin-bottom matches the space a Bubble section_heading separator leaves (measured: content starts 22px below the edge) */
+    .heading { display: flex; align-items: center; height: 32px; margin: -16px 0 6px; min-width: 0; }
     .heading .name { margin: 0 8px 0 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .heading .hl { flex: 1; }
     .heading .source, .heading .tog { font-size: 12.5px; font-weight: 500; color: var(--secondary-text-color); white-space: nowrap; }
