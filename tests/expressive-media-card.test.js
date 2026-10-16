@@ -1,11 +1,18 @@
 const { JSDOM } = require("jsdom");
 const fs = require("fs");
-const dom = new JSDOM(`<!doctype html><body></body>`, { runScripts: "outside-only", pretendToBeVisual: true });
+const dom = new JSDOM(`<!doctype html><body></body>`, { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
 const w = dom.window;
 w.eval(`customElements.define("ha-card", class extends HTMLElement {});
 customElements.define("ha-icon", class extends HTMLElement { set icon(v){this._i=v} get icon(){return this._i} });
 customElements.define("expressive-slider-card", class extends HTMLElement {
   setConfig(c){ this.config = c } set hass(h){ this._hass = h; this.hassSets = (this.hassSets ?? 0) + 1 } });`);
+const CHANNELS = { channels: [
+  { uuid: "u1", number: 101, name: "BBC ONE Lon HD", logo: "u1.png" },
+  { uuid: "u2", number: 102, name: "BBC TWO HD", logo: "u2.png" },
+  { uuid: "u3", number: 52, name: "Great! Christmas", logo: null },
+] };
+w.fetch = (url) => Promise.resolve({ ok: url.endsWith("/local/tv-logos/channels.json"), json: () => Promise.resolve(CHANNELS) });
+const later = () => new Promise((r) => setTimeout(r, 0));
 w.eval(fs.readFileSync(process.argv[2] ?? `${__dirname}/../expressive-media-card.js`, "utf8"));
 
 const ok = (c, m) => { if (!c) { console.log("FAIL", m); process.exitCode = 1; } else console.log("ok  ", m); };
@@ -22,7 +29,7 @@ const base = () => ({
 });
 let states = base();
 const hass = () => ({ states: { ...states }, callService: (d, s, data) => calls.push([d, s, data]) });
-const cfg = { entity: TV, plex: PLEX, guide: "sensor.guide", guide_next: "sensor.next", logo: "image.logo", backdrop: "image.backdrop", volume: { max: 25 } };
+const cfg = { entity: TV, plex: PLEX, guide: "sensor.guide", guide_next: "sensor.next", backdrop: "image.backdrop", volume: { max: 25 } };
 const mk = (c = cfg) => { const el = w.document.createElement("expressive-media-card"); el.setConfig(c); el.hass = hass(); w.document.body.append(el); return el; };
 const $ = (el, s) => el.shadowRoot.querySelector(s);
 const text = (el, s) => $(el, s).textContent;
@@ -106,20 +113,6 @@ ok(text(c, ".title") === "The Graham Norton Show", "live: programme title");
 ok(text(c, ".sub").startsWith("Next: RuPaul's Drag Race UK · "), "live: Next line under the title");
 ok(/^\d\d:\d\d$/.test(text(c, ".t0")) && /^\d\d:\d\d$/.test(text(c, ".t1")), "live: start and end clock times");
 ok(Math.abs(parseFloat($(c, ".progress i").style.width) - 20) < 1, "live: progress through the programme: " + $(c, ".progress i").style.width);
-ok($(c, ".logo").style.backgroundImage.includes("image.logo") && $(c, ".blurred").style.backgroundImage.includes("image.logo"), "live: sharp and blurred logo");
-ok(!$(c, ".logo").classList.contains("tile"), "live: logo is not a tile");
-// the guide has moved on but the logo image hasn't caught up: no logo rather than the last channel's
-states["sensor.guide"].last_updated = "2026-10-17T00:12:25.765Z";
-states["image.logo"].last_updated = "2026-10-17T00:12:15.000Z";
-c.hass = hass();
-ok(!$(c, ".logo").style.backgroundImage, "stale logo image is not shown");
-states["image.logo"].last_updated = "2026-10-17T00:12:25.766Z";
-c.hass = hass();
-ok($(c, ".logo").style.backgroundImage.includes("image.logo"), "logo shown once the image has updated");
-const logo1 = $(c, ".logo").style.backgroundImage;
-states["image.logo"] = { state: "2026-10-17T00:06", attributes: { entity_picture: "/api/image_proxy/image.logo?token=a" } };
-c.hass = hass();
-ok($(c, ".logo").style.backgroundImage !== logo1 && $(c, ".logo").style.backgroundImage.includes("state=2026-10-17T00%3A06"), "a new logo image with the same URL repaints: " + $(c, ".logo").style.backgroundImage);
 ok($(c, ".badge").hidden, "live: no rating badge");
 press(c, 1);
 ok(last() === JSON.stringify(["media_player", "media_next_track", { entity_id: TV }]), "channel up = next track " + last());
@@ -180,6 +173,74 @@ ok(hero.style.getPropertyValue("--emc-blur") === "20px" && hero.style.getPropert
 c = mk();
 ok($(c, ".hero").style.getPropertyValue("--emc-blur") === "40px" && $(c, ".hero").style.getPropertyValue("--emc-zoom") === "168px", "blur defaults 40px, 3x");
 
-c.remove();
-ok(true, "disconnect without error");
-setTimeout(() => process.exit(), 0);
+(async () => {
+  await later(); await later();
+  // live logo from the logos folder, by the TV's channel name
+  states = base();
+  states[TV] = { state: "on", attributes: { source: "Live TV", media_title: "BBC ONE Lon HD", media_content_type: "channel" } };
+  c = mk();
+  await later();
+  ok($(c, ".logo").style.backgroundImage.includes("/local/tv-logos/u1.png") && $(c, ".blurred").style.backgroundImage.includes("u1.png"), "live: sharp and blurred logo from the folder");
+  ok(!$(c, ".logo").classList.contains("tile"), "live: logo is not a tile");
+  ok(text(c, ".title") === "BBC ONE Lon HD", "no guide: channel name, logo still shown");
+  states[TV].attributes.media_title = "BBC TWO HD";
+  c.hass = hass();
+  ok($(c, ".logo").style.backgroundImage.includes("u2.png"), "logo follows a channel change at once");
+  ok($(c, ".heading").hidden, "no heading without name");
+
+  // heading and channel list
+  const epgCalls = [];
+  const t = Math.floor(Date.now() / 1000);
+  const ENTRIES = [
+    { channelName: "BBC ONE Lon HD", title: "News", start: t - 600, stop: t + 600 },
+    { channelName: "BBC ONE Lon HD", title: "Weather", start: t + 600, stop: t + 900 },
+    { channelName: "BBC TWO HD", title: "Film", start: t - 60, stop: t + 3600 },
+  ];
+  const H = () => ({ ...hass(), callWS: (m) => { epgCalls.push(m); return Promise.resolve({ response: { content: { entries: ENTRIES } } }); } });
+  const ch = w.document.createElement("expressive-media-card");
+  ch.setConfig({ ...cfg, name: "TV", channels: { epg: "rest_command.tvheadend_epg" } });
+  ch.hass = H(); w.document.body.append(ch);
+  await later();
+  ok(!$(ch, ".heading").hidden && text(ch, ".heading .name") === "TV" && text(ch, ".heading .source") === "Live TV", "heading: name and source");
+  ok(!$(ch, ".heading .tog").hidden && $(ch, ".channels").hidden, "Channels toggle shown, list closed");
+  ok(epgCalls.length === 0, "guide not fetched while closed");
+  $(ch, ".heading .tog").click();
+  await later(); await later();
+  ok(!$(ch, ".channels").hidden && $(ch, ".heading .tog").getAttribute("aria-expanded") === "true", "toggle opens the list");
+  ok(epgCalls.length === 1 && epgCalls[0].domain === "rest_command" && epgCalls[0].service === "tvheadend_epg" && epgCalls[0].return_response, "guide fetched with a response");
+  const rows = ch.shadowRoot.querySelectorAll(".ch");
+  ok(rows.length === 3, "one row per channel in channels.json order");
+  ok(rows[0].querySelector(".title").textContent === "News" && rows[0].querySelector(".sub").textContent.startsWith("Next: Weather · "), "row: now and next");
+  ok(rows[1].classList.contains("cur") && !rows[0].classList.contains("cur"), "the tuned channel is highlighted");
+  ok(rows[2].querySelector(".num").textContent === "52" && rows[2].querySelector(".title").textContent === "Great! Christmas", "no logo or guide: number and name");
+  ok(w.localStorage.getItem("expressive-media-card:channels:" + TV) === "1", "open state remembered on this device");
+  rows[0].click();
+  ok(last() === JSON.stringify(["media_player", "play_media", { entity_id: TV, media_content_type: "channel", media_content_id: "BBC ONE Lon HD" }]), "tap tunes by name " + last());
+
+  // tuning from another input switches to live TV first
+  states[TV] = { state: "on", attributes: { source: "Apple TV" } };
+  ch.hass = H();
+  const n0 = calls.length;
+  ch.shadowRoot.querySelectorAll(".ch")[1].click();
+  ok(JSON.stringify(calls[n0]) === JSON.stringify(["media_player", "select_source", { entity_id: TV, source: "Live TV" }]) && calls.length === n0 + 1, "other input: select_source first");
+  await new Promise((r) => setTimeout(r, 2600));
+  ok(last() === JSON.stringify(["media_player", "play_media", { entity_id: TV, media_content_type: "channel", media_content_id: "BBC TWO HD" }]), "then play_media after a pause");
+
+  $(ch, ".heading .tog").click();
+  ok($(ch, ".channels").hidden && w.localStorage.getItem("expressive-media-card:channels:" + TV) === "0", "toggle closes and remembers");
+
+  // opens as left on this device; a failed fetch says so
+  w.localStorage.setItem("expressive-media-card:channels:" + TV, "1");
+  states = base();
+  states[TV] = { state: "on", attributes: { source: "Live TV", media_title: "BBC ONE Lon HD", media_content_type: "channel" } };
+  const bad = w.document.createElement("expressive-media-card");
+  bad.setConfig({ ...cfg, name: "TV", channels: { epg: "rest_command.x" } });
+  bad.hass = { ...hass(), callWS: () => Promise.reject(new Error("nope")) };
+  w.document.body.append(bad);
+  await later(); await later();
+  ok(!$(bad, ".channels").hidden && /Couldn't load the guide/.test(text(bad, ".channels")), "reopens from the device setting; fetch error shown");
+
+  c.remove(); ch.remove(); bad.remove();
+  ok(true, "disconnect without error");
+  setTimeout(() => process.exit(), 0);
+})();

@@ -18,7 +18,11 @@
  *   guide: sensor.tv_guide_now          # optional programme on now, as a TVHeadend EPG entry:
  *                                       #   attributes channelName, title, start, stop (epoch seconds)
  *   guide_next: sensor.tv_guide_next    # optional programme after it: attributes title, start
- *   logo: image.tv_logo                 # optional channel logo for the guide's channel
+ *   name: TV                            # optional block heading: name, a Channels toggle, and the TV's source
+ *   logos: /local/tv-logos/             # folder with channels.json and the channel logos it names; false = none
+ *   channels:                           # optional now-and-next list of every channel, opened from the heading
+ *     epg: rest_command.tvheadend_epg   # returns TVHeadend /api/epg/events/grid JSON for now to a few hours on
+ *     rows: 4                           # rows visible before the list scrolls
  *   backdrop: image.tv_backdrop         # optional wide artwork for the Plex item; the Plex poster otherwise
  *   ratings: /local/ratings/            # folder of age-rating symbols: BBFC_PG.svg, TV-14.svg ...; false = none
  *   volume:                             # merged into the expressive-slider-card config for the TV
@@ -31,21 +35,25 @@
  *       zoom: 3                         # logo size behind, as a multiple of the sharp logo
  *       strength: 50                    # % opacity
  *
- * Elements: card, hero, backdrop, logo, tile, badge, title, subtitle, progress, bar, times, controls, disc, volume.
+ * Elements: heading, name, toggle, source, card, hero, backdrop, logo, tile, badge, title, subtitle, progress, bar,
+ * times, controls, disc, volume, channels, channel.
  * Properties are CSS names; size, weight and colour are short for font-size, font-weight and color.
  * Bare numbers become px. Each block can also be a list of single properties.
  *
+ * Tapping a channel tunes the TV to it (switching the TV to `live_source` first if needed).
  * The card hides itself while the TV is off or unavailable.
  */
 
 (() => {
-  const VERSION = "0.1.1";
+  const VERSION = "0.2.0";
   const OFF = new Set(["off", "unavailable", "unknown", "standby"]);
   const ACTIVE = new Set(["playing", "paused"]);
   const BBFC = new Set(["U", "PG", "12A", "12", "15", "18", "R18"]);
   const US_TV = new Set(["TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA"]);
   const BLUR_DEFAULTS = { blur: 40, zoom: 3, strength: 50 };
   const LOGO_PX = 56;
+  const EPG_REFRESH_MS = 60000;
+  const TUNE_DELAY_MS = 2500; // after switching input to live TV, before picking the channel
 
   const VOLUME_DEFAULTS = {
     icon: "mdi:volume-high",
@@ -58,6 +66,8 @@
   };
 
   const TARGETS = {
+    heading: ".heading", name: ".heading .name", toggle: ".heading .tog", source: ".heading .source",
+    channels: ".channels", channel: ".channels .ch",
     card: "ha-card", hero: ".hero", backdrop: ".backdrop", logo: ".logo", tile: ".logo.tile", badge: ".badge",
     title: ".title", subtitle: ".sub", progress: ".progress", bar: ".progress i", times: ".times",
     controls: ".controls", disc: ".disc", volume: ".volume",
@@ -103,6 +113,23 @@
     return u ? `${u}${u.includes("?") ? "&" : "?"}state=${encodeURIComponent(s.state)}` : null;
   };
 
+  // channels.json (written alongside the logos) lists every TV channel: uuid, number, name, logo file.
+  const channelLists = new Map();
+  const loadChannels = (folder) => {
+    if (!channelLists.has(folder)) {
+      channelLists.set(folder, fetch(`${folder}channels.json`)
+        .then((r) => (r.ok ? r.json() : { channels: [] }))
+        .then((j) => j.channels ?? [])
+        .catch(() => []));
+    }
+    return channelLists.get(folder);
+  };
+  const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const storage = {
+    get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } },
+  };
+
   // Plex gives "gb/PG"; the symbol files are BBFC_PG.svg and TV-14.svg.
   const ratingKey = (r) => (typeof r === "string" && r ? r.replace(/^[a-z]{2}\//i, "").trim() : null);
   const ratingFile = (r) => (BBFC.has(r) ? `BBFC_${r}.svg` : US_TV.has(r) ? `${r}.svg` : null);
@@ -127,8 +154,13 @@
         plex_source: "Apple TV",
         live_source: "Live TV",
         ratings: "/local/ratings/",
+        logos: "/local/tv-logos/",
         ...config,
       };
+      if (this._config.logos) this._config.logos = this._config.logos.replace(/\/?$/, "/");
+      this._channelsCfg = config.channels ? { rows: 4, ...config.channels } : null;
+      this._openKey = `expressive-media-card:channels:${config.entity}`;
+      this._open = !!this._channelsCfg && storage.get(this._openKey) === "1";
       this._config.apple_tv_source ??= this._config.plex_source;
       this._blur = { ...BLUR_DEFAULTS, ...flat(config.styles?.blur) };
       this._volumeConfig = merge(merge(VOLUME_DEFAULTS, { entity: config.entity }), config.volume ?? {});
@@ -153,16 +185,25 @@
 
     connectedCallback() {
       if (this._model?.progress) this._startTimer();
+      if (this._open && this._model) this._startEpg();
     }
 
     disconnectedCallback() {
       this._stopTimer();
+      this._stopEpg();
+      clearTimeout(this._tuneTimer);
     }
 
     _build() {
       const root = this.attachShadow({ mode: "open" });
       root.innerHTML = `
         <style>${CSS}</style><style id="user"></style>
+        <div class="heading" hidden>
+          <h4 class="name"></h4>
+          <button class="tog" type="button" hidden aria-expanded="false">Channels<ha-icon icon="mdi:chevron-down"></ha-icon></button>
+          <span class="hl"></span>
+          <span class="source"></span>
+        </div>
         <ha-card>
           <div class="hero">
             <div class="backdrop"></div>
@@ -182,13 +223,21 @@
             <div class="controls"></div>
             <div class="volume"></div>
           </div>
-        </ha-card>`;
+        </ha-card>
+        <div class="channels" hidden><div class="list" role="list"></div></div>`;
       const $ = (s) => root.querySelector(s);
       this._el = {
         backdrop: $(".backdrop"), blurred: $(".blurred"), logo: $(".logo"), badge: $(".badge"),
         title: $(".title"), sub: $(".sub"), progWrap: $(".prog-wrap"), bar: $(".progress i"),
         t0: $(".t0"), t1: $(".t1"), controls: $(".controls"), volume: $(".volume"),
+        heading: $(".heading"), name: $(".heading .name"), tog: $(".heading .tog"), source: $(".heading .source"),
+        channels: $(".channels"), list: $(".channels .list"),
       };
+      this._el.tog.addEventListener("click", () => this._setOpen(!this._open));
+      this._el.list.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-name]");
+        if (b) this._tune(b.dataset.name);
+      });
       this._el.controls.addEventListener("click", (e) => {
         const b = e.target.closest("button[data-n]");
         if (b) this._press(Number(b.dataset.n));
@@ -204,6 +253,17 @@
       h.style.setProperty("--emc-zoom", `${LOGO_PX * this._blur.zoom}px`);
       h.style.setProperty("--emc-strength", this._blur.strength / 100);
       if (this._slider) this._slider.setConfig(this._volumeConfig);
+      this._el.heading.hidden = !this._config.name;
+      this._el.name.textContent = this._config.name ?? "";
+      this._el.tog.hidden = !this._channelsCfg;
+      this._el.channels.style.setProperty("--emc-rows", this._channelsCfg?.rows ?? 4);
+      if (this._config.logos) loadChannels(this._config.logos).then((list) => {
+        this._chanList = list;
+        this._byName = new Map(list.map((ch) => [ch.name, ch]));
+        this._key = null;
+        this._render();
+        this._paintList();
+      });
       this._key = null;
     }
 
@@ -268,12 +328,12 @@
       if (src === c.live_source || tv.attributes.media_content_type === "channel") {
         const channel = tv.attributes.media_title ?? src;
         const g = this._guide(channel, now);
-        const logo = g && this._fresh(c.logo, c.guide) ? imageUrl(this._state(c.logo)) : null;
+        const logo = this._logo(channel);
         const chans = [
           { icon: "mdi:chevron-down", label: "Channel down", call: [c.entity, "media_previous_track"] },
           { icon: "mdi:chevron-up", label: "Channel up", call: [c.entity, "media_next_track"] },
         ];
-        if (!g) return { title: channel, sub: "", rating: null, art: null, progress: null, controls: chans };
+        if (!g) return { title: channel, sub: "", rating: null, art: logo ? { kind: "logo", url: logo } : null, progress: null, controls: chans };
         return {
           title: g.title,
           sub: g.next ? `Next: ${g.next} · ${clock(g.nextStart)}` : "",
@@ -297,11 +357,9 @@
       };
     }
 
-    // The logo image updates just after the guide; until it has, it still holds the last channel's logo.
-    _fresh(image, after) {
-      const i = this._state(image), g = this._state(after);
-      const ti = Date.parse(i?.last_updated ?? ""), tg = Date.parse(g?.last_updated ?? "");
-      return Number.isNaN(ti) || Number.isNaN(tg) || ti >= tg;
+    _logo(channel) {
+      const ch = this._byName?.get(channel);
+      return ch?.logo && this._config.logos ? `${this._config.logos}${ch.logo}` : null;
     }
 
     // Now and next from the guide sensors, when they describe the channel on screen and the times fit.
@@ -352,7 +410,18 @@
       this.toggleAttribute("hidden", !m);
       this.style.display = m ? "" : "none";
       this._model = m;
-      if (!m) return this._stopTimer();
+      if (!m) {
+        this._stopEpg();
+        return this._stopTimer();
+      }
+      const tv = this._state(this._config.entity).attributes;
+      this._el.source.textContent = tv.source ?? "";
+      const tuned = tv.source === this._config.live_source || tv.media_content_type === "channel" ? tv.media_title : null;
+      if (tuned !== this._tuned) {
+        this._tuned = tuned;
+        this._paintList();
+      }
+      if (this._open) this._startEpg();
 
       // Only touch the DOM when something visible changed, so images don't reload on every state update.
       const key = JSON.stringify([m.title, m.sub, m.rating, m.art, m.progress?.dur, m.progress?.live, m.progress?.clock,
@@ -414,12 +483,107 @@
       this._el.t1.textContent = p.clock ? p.clock[1] : duration(p.dur);
     }
 
+    _setOpen(open) {
+      this._open = open;
+      storage.set(this._openKey, open ? "1" : "0");
+      this._scrolled = false;
+      if (open) this._startEpg();
+      else this._stopEpg();
+      this._paintList();
+    }
+
+    // The guide is fetched only while the list is open.
+    _startEpg() {
+      if (this._epgTimer || !this._channelsCfg?.epg || !this._hass) return;
+      const load = () => this._loadEpg();
+      load();
+      this._epgTimer = setInterval(load, EPG_REFRESH_MS);
+    }
+
+    _stopEpg() {
+      clearInterval(this._epgTimer);
+      this._epgTimer = null;
+    }
+
+    async _loadEpg() {
+      const [domain, service] = this._channelsCfg.epg.split(".");
+      try {
+        const r = await this._hass.callWS({ type: "call_service", domain, service, service_data: {}, return_response: true });
+        const content = r?.response?.content;
+        const entries = (typeof content === "string" ? JSON.parse(content) : content)?.entries;
+        if (!Array.isArray(entries)) throw new Error("no entries");
+        this._epg = entries;
+        this._epgError = false;
+      } catch (_) {
+        this._epgError = true;
+      }
+      this._paintList();
+    }
+
+    // Now and next for every channel in channels.json order, from the guide entries.
+    _rows(now) {
+      const t = now / 1000;
+      const by = new Map();
+      for (const e of this._epg ?? []) {
+        if (!by.has(e.channelName)) by.set(e.channelName, []);
+        by.get(e.channelName).push(e);
+      }
+      return (this._chanList ?? []).map((ch) => {
+        const ev = (by.get(ch.name) ?? []).sort((a, b) => a.start - b.start);
+        const on = ev.find((e) => e.start <= t && t < e.stop);
+        const next = on ? ev.find((e) => e.start >= on.stop) : ev.find((e) => e.start > t);
+        return { ch, on, next };
+      });
+    }
+
+    _paintList() {
+      const e = this._el;
+      if (!e) return;
+      e.channels.hidden = !this._open || !this._channelsCfg;
+      e.tog.setAttribute("aria-expanded", String(this._open));
+      e.tog.querySelector("ha-icon").setAttribute("icon", this._open ? "mdi:chevron-up" : "mdi:chevron-down");
+      if (e.channels.hidden) return;
+      const now = Date.now();
+      const rows = this._rows(now);
+      const html = this._epgError && !this._epg ? `<div class="msg">Couldn't load the guide.</div>`
+        : rows.map(({ ch, on, next }) => {
+          const p = on ? Math.min(1, Math.max(0, (now / 1000 - on.start) / (on.stop - on.start))) : 0;
+          const logo = ch.logo && this._config.logos ? `<img class="cl" src="${esc(this._config.logos + ch.logo)}" alt="">` : `<span class="cl num">${esc(ch.number ?? "")}</span>`;
+          return `<button class="ch${ch.name === this._tuned ? " cur" : ""}" type="button" role="listitem" data-name="${esc(ch.name)}" aria-label="Watch ${esc(ch.name)}">
+            ${logo}<span class="ci"><span class="title">${esc(on?.title ?? ch.name)}</span>
+            <span class="sub">${next ? `Next: ${esc(next.title)} · ${clock(next.start)}` : ""}</span>
+            ${on ? `<span class="progress"><i style="width:${p * 100}%"></i></span>` : ""}</span></button>`;
+        }).join("");
+      const top = e.list.scrollTop;
+      e.list.innerHTML = html;
+      if (!this._scrolled && this._epg) {
+        const cur = e.list.querySelector(".ch.cur");
+        if (cur) e.list.scrollTop = cur.offsetTop - e.list.offsetTop;
+        this._scrolled = true;
+      } else e.list.scrollTop = top;
+    }
+
+    _tune(name) {
+      const c = this._config;
+      const play = () => this._hass.callService("media_player", "play_media",
+        { entity_id: c.entity, media_content_type: "channel", media_content_id: name });
+      clearTimeout(this._tuneTimer);
+      if (this._state(c.entity)?.attributes.source !== c.live_source) {
+        this._hass.callService("media_player", "select_source", { entity_id: c.entity, source: c.live_source });
+        this._tuneTimer = setTimeout(play, TUNE_DELAY_MS);
+      } else play();
+    }
+
     _startTimer() {
       if (this._timer) return;
       this._timer = setInterval(() => {
         // A broadcast re-merges so the next programme takes over on time.
         if (this._model?.progress?.clock) this._render();
         else this._tick();
+        if (this._open && Date.now() - (this._listAt ?? 0) > 30000) {
+          this._listAt = Date.now();
+          this._paintList();
+        }
       }, 1000);
     }
 
@@ -431,6 +595,26 @@
 
   const CSS = `
     :host { display: block; }
+    .heading { display: flex; align-items: center; height: 32px; margin-top: -16px; min-width: 0; }
+    .heading .name { margin: 0 8px 0 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .heading .hl { flex: 1; }
+    .heading .source, .heading .tog { font-size: 12.5px; font-weight: 500; color: var(--secondary-text-color); white-space: nowrap; }
+    .heading .tog { border: 0; background: none; padding: 0; height: 32px; display: flex; align-items: center; gap: 2px;
+                    cursor: pointer; font-family: inherit; --mdc-icon-size: 18px; }
+    .heading .tog:focus-visible, .ch:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+    .channels { margin-top: 16px; }
+    .list { display: grid; gap: 8px; max-height: calc(var(--emc-rows, 4) * 72px - 8px); overflow-y: auto;
+            overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--secondary-text-color) transparent; }
+    .ch { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%;
+          background: var(--popupBG, var(--secondary-background-color)); border: 0; border-radius: 16px; padding: 8px 12px;
+          color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .ch.cur { box-shadow: inset 0 0 0 2px rgb(201, 126, 11); }
+    .ch .cl { width: 48px; height: 32px; object-fit: contain; }
+    .ch .num { display: grid; place-items: center; font-size: 12.5px; font-weight: 600; color: var(--secondary-text-color); }
+    .ch .ci { display: block; min-width: 0; }
+    .ch .title, .ch .sub { display: block; }
+    .ch .progress { display: block; margin-top: 8px; }
+    .msg { font-size: 12.5px; color: var(--secondary-text-color); padding: 8px 0; }
     ha-card {
       background: var(--popupBG, var(--secondary-background-color));
       border: none; box-shadow: none; border-radius: 16px; overflow: hidden;
