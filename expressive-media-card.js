@@ -45,7 +45,7 @@
  */
 
 (() => {
-  const VERSION = "0.2.0";
+  const VERSION = "0.2.1";
   const OFF = new Set(["off", "unavailable", "unknown", "standby"]);
   const ACTIVE = new Set(["playing", "paused"]);
   const BBFC = new Set(["U", "PG", "12A", "12", "15", "18", "R18"]);
@@ -594,7 +594,8 @@
   }
 
   const CSS = `
-    :host { display: block; }
+    /* flow-root stops the heading's -16px collapsing through the block, so it straddles the block's edge */
+    :host { display: flow-root; }
     .heading { display: flex; align-items: center; height: 32px; margin-top: -16px; min-width: 0; }
     .heading .name { margin: 0 8px 0 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .heading .hl { flex: 1; }
