@@ -96,6 +96,11 @@
     return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(x).padStart(2, "0")}`;
   };
   const picture = (s) => (s && !OFF.has(s.state) ? s.attributes.entity_picture ?? null : null);
+  // An image entity keeps the same picture URL when its image changes; its state is the change time.
+  const imageUrl = (s) => {
+    const u = picture(s);
+    return u ? `${u}${u.includes("?") ? "&" : "?"}state=${encodeURIComponent(s.state)}` : null;
+  };
 
   // Plex gives "gb/PG"; the symbol files are BBFC_PG.svg and TV-14.svg.
   const ratingKey = (r) => (typeof r === "string" && r ? r.replace(/^[a-z]{2}\//i, "").trim() : null);
@@ -235,7 +240,7 @@
         const m = (a.media_title ?? "").match(/^(.*?)\s*\((\d{4})\)$/);
         const title = show ? a.media_series_title ?? a.media_title : m ? m[1] : a.media_title;
         const sub = show ? episodeLine(a) : a.media_content_type === "movie" ? ["Film", m?.[2]].filter(Boolean).join(" · ") : a.media_artist ?? "";
-        const backdrop = picture(this._state(c.backdrop));
+        const backdrop = imageUrl(this._state(c.backdrop));
         const pos = position(a, playing, now);
         return {
           title, sub, rating: ratingKey(a.media_content_rating),
@@ -262,7 +267,7 @@
       if (src === c.live_source || tv.attributes.media_content_type === "channel") {
         const channel = tv.attributes.media_title ?? src;
         const g = this._guide(channel, now);
-        const logo = g && picture(this._state(c.logo));
+        const logo = g && imageUrl(this._state(c.logo));
         const chans = [
           { icon: "mdi:chevron-down", label: "Channel down", call: [c.entity, "media_previous_track"] },
           { icon: "mdi:chevron-up", label: "Channel up", call: [c.entity, "media_next_track"] },

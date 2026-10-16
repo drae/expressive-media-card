@@ -108,6 +108,10 @@ ok(/^\d\d:\d\d$/.test(text(c, ".t0")) && /^\d\d:\d\d$/.test(text(c, ".t1")), "li
 ok(Math.abs(parseFloat($(c, ".progress i").style.width) - 20) < 1, "live: progress through the programme: " + $(c, ".progress i").style.width);
 ok($(c, ".logo").style.backgroundImage.includes("image.logo") && $(c, ".blurred").style.backgroundImage.includes("image.logo"), "live: sharp and blurred logo");
 ok(!$(c, ".logo").classList.contains("tile"), "live: logo is not a tile");
+const logo1 = $(c, ".logo").style.backgroundImage;
+states["image.logo"] = { state: "2026-10-17T00:06", attributes: { entity_picture: "/api/image_proxy/image.logo?token=a" } };
+c.hass = hass();
+ok($(c, ".logo").style.backgroundImage !== logo1 && $(c, ".logo").style.backgroundImage.includes("state=2026-10-17T00%3A06"), "a new logo image with the same URL repaints: " + $(c, ".logo").style.backgroundImage);
 ok($(c, ".badge").hidden, "live: no rating badge");
 press(c, 1);
 ok(last() === JSON.stringify(["media_player", "media_next_track", { entity_id: TV }]), "channel up = next track " + last());
