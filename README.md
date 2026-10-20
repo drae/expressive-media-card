@@ -8,7 +8,7 @@ A "now playing" card for a TV that has other players behind its inputs. It shows
 - **A channel list** (optional): every channel's programme now and next, opened from "Channels" in the card's heading. Tap a channel to tune the TV to it.
 - **The TV's own apps**: the app's icon.
 
-Volume uses [expressive-slider-card](https://github.com/drae/expressive-slider-card), which must be loaded too. The card hides itself while the TV is off or unavailable.
+Volume uses [expressive-slider-card](https://github.com/drae/expressive-slider-card), which must be loaded too. It stays out of the way: a speaker disc at the right of the controls swaps the discs for a thin volume line, and the discs come back on a second tap or after 10 seconds without use. The card hides itself while the TV is off or unavailable.
 
 It is a single plain JavaScript file with no dependencies.
 
@@ -52,7 +52,8 @@ volume:
 | `channels` | none | The channel list. `epg` is a `rest_command` (or any service that returns a response) giving TVHeadend's `/api/epg/events/grid` JSON from now to a few hours ahead; `rows` (default `4`) is how many rows show before the list scrolls. The guide is fetched only while the list is open, and refreshed every minute. Whether it's open is remembered per device. |
 | `backdrop` | none | An `image` entity with wide artwork for the Plex item. Without it the Plex poster is cropped to fit. |
 | `ratings` | `/local/ratings/` | The folder of rating symbols. `false` hides the badge. |
-| `volume` | | Merged into the slider's config. The defaults hide its header, make its card transparent, colour the track amber, and make tap and double tap do nothing, so a stray tap can't switch the TV off. |
+| `volume` | | Merged into the slider's config. The defaults hide its header and icon, make its card transparent, draw an 8px amber track, and make tap and double tap do nothing, so a stray tap can't switch the TV off. |
+| `volume_idle` | `10` | Seconds without use before the volume line gives way to the discs again. `0` keeps it open until the speaker disc is tapped. |
 | `styles` | | See [Styles](#styles). |
 
 ## What shows when
@@ -84,7 +85,7 @@ rest_command:
 
 ## Styles
 
-`styles:` takes one block per element: `heading`, `name`, `toggle`, `source`, `channels`, `channel`, `card`, `hero`, `backdrop`, `logo`, `tile`, `badge`, `title`, `subtitle`, `progress`, `bar`, `times`, `controls`, `disc` and `volume`. Properties are CSS names. `size`, `weight` and `colour` are short for `font-size`, `font-weight` and `color`, and bare numbers become px. A block can also be a list of single properties.
+`styles:` takes one block per element: `heading`, `name`, `toggle`, `source`, `channels`, `channel`, `card`, `hero`, `backdrop`, `logo`, `tile`, `badge`, `title`, `subtitle`, `progress`, `bar`, `times`, `controls`, `disc`, `speaker` (the volume disc) and `volume`. Properties are CSS names. `size`, `weight` and `colour` are short for `font-size`, `font-weight` and `color`, and bare numbers become px. A block can also be a list of single properties.
 
 `styles.blur` sets the blurred logo instead of a CSS rule:
 

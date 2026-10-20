@@ -12,7 +12,7 @@ const CHANNELS = { channels: [
   { uuid: "u3", number: 52, name: "Great! Christmas", logo: null },
 ] };
 w.fetch = (url) => Promise.resolve({ ok: url.endsWith("/local/tv-logos/channels.json"), json: () => Promise.resolve(CHANNELS) });
-const later = () => new Promise((r) => setTimeout(r, 0));
+const later = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 w.eval(fs.readFileSync(process.argv[2] ?? `${__dirname}/../expressive-media-card.js`, "utf8"));
 
 const ok = (c, m) => { if (!c) { console.log("FAIL", m); process.exitCode = 1; } else console.log("ok  ", m); };
@@ -53,6 +53,7 @@ ok(s && s.config.entity === TV && s.config.max === 25, "slider for the TV's volu
 ok(s.config.tap_action.action === "none" && s.config.double_tap_action.action === "none", "slider tap and double tap do nothing");
 ok(s.config.styles.header.display === "none" && s.config.styles.card.background === "transparent", "slider header hidden, card transparent");
 ok(s.config.styles.track.color === "rgb(201, 126, 11)", "slider keeps the default amber");
+ok(s.config.icon === false && s.config.styles.track.height === 8, "volume is the thin 8px line with no pip");
 
 // Plex film playing behind the Apple TV input
 states = base();
@@ -153,7 +154,7 @@ states[ATV] = { state: "playing", attributes: { media_title: "Sleepytime", media
   entity_picture: "/api/media_player_proxy/media_player.atv?token=x" } };
 c = mk({ ...cfg, apple_tv: ATV });
 ok(text(c, ".title") === "Bluey" && text(c, ".sub") === "S3 E12 · Sleepytime", "Apple TV: series and episode");
-ok([...c.shadowRoot.querySelectorAll(".disc ha-icon")].map((i) => i.icon).join() === "mdi:rewind-10,mdi:pause,mdi:fast-forward-30", "Apple TV: back, pause, forward");
+ok([...c.shadowRoot.querySelectorAll(".controls .disc ha-icon")].map((i) => i.icon).join() === "mdi:rewind-10,mdi:pause,mdi:fast-forward-30", "Apple TV: back, pause, forward");
 press(c, 2);
 const sk = calls.at(-1);
 ok(sk[1] === "media_seek" && sk[2].entity_id === ATV && Math.abs(sk[2].media_position - 130) <= 1, "forward 30 seeks the Apple TV " + JSON.stringify(sk));
@@ -163,7 +164,7 @@ ok(last() === JSON.stringify(["media_player", "media_pause", { entity_id: ATV }]
 // Plex details win, Apple TV transport when both are there
 states[PLEX] = { state: "playing", attributes: { media_content_type: "movie", media_title: "Coyote vs. Acme (2026)", media_duration: 6175, media_position: 1, media_position_updated_at: iso(0) } };
 c = mk({ ...cfg, apple_tv: ATV });
-ok(text(c, ".title") === "Coyote vs. Acme" && c.shadowRoot.querySelectorAll(".disc").length === 3, "Plex details with Apple TV transport");
+ok(text(c, ".title") === "Coyote vs. Acme" && c.shadowRoot.querySelectorAll(".controls .disc").length === 3, "Plex details with Apple TV transport");
 
 // styles
 c = mk({ ...cfg, styles: { title: { size: 15 }, blur: { blur: 20, zoom: 2, strength: 70 } } });
@@ -239,6 +240,33 @@ ok($(c, ".hero").style.getPropertyValue("--emc-blur") === "40px" && $(c, ".hero"
   w.document.body.append(bad);
   await later(); await later();
   ok(!$(bad, ".channels").hidden && /Couldn't load the guide/.test(text(bad, ".channels")), "reopens from the device setting; fetch error shown");
+
+  // volume on demand: the speaker disc swaps the discs for the volume line and back
+  states = base();
+  const vc = mk();
+  const row = $(vc, ".row"), spk = $(vc, ".spk");
+  ok(!row.classList.contains("vol") && spk.getAttribute("aria-pressed") === "false", "discs showing, volume tucked away");
+  ok(row.lastElementChild === spk, "speaker disc sits at the right of the row");
+  spk.click();
+  ok(row.classList.contains("vol") && spk.getAttribute("aria-pressed") === "true", "speaker opens the volume line");
+  ok(row.lastElementChild === spk, "speaker stays where it was");
+  spk.click();
+  ok(!row.classList.contains("vol"), "speaker again closes it");
+  const quick = mk({ ...cfg, volume_idle: 0.08 });
+  $(quick, ".spk").click();
+  await later(50);
+  $(quick, ".volume").dispatchEvent(new w.Event("pointerdown", { bubbles: true }));
+  await later(50);
+  ok($(quick, ".row").classList.contains("vol"), "using the slider restarts the idle timer");
+  await later(80);
+  ok(!$(quick, ".row").classList.contains("vol"), "closes itself after volume_idle seconds");
+  const stay = mk({ ...cfg, volume_idle: 0 });
+  $(stay, ".spk").click();
+  await later(50);
+  ok($(stay, ".row").classList.contains("vol"), "volume_idle: 0 stays open");
+  stay.remove();
+  ok(!$(stay, ".row").classList.contains("vol"), "detaching closes it");
+  vc.remove(); quick.remove();
 
   c.remove(); ch.remove(); bad.remove();
   ok(true, "disconnect without error");

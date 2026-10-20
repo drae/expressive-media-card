@@ -27,6 +27,7 @@
  *   ratings: /local/ratings/            # folder of age-rating symbols: BBFC_PG.svg, TV-14.svg ...; false = none
  *   volume:                             # merged into the expressive-slider-card config for the TV
  *     max: 25
+ *   volume_idle: 10                     # seconds before the volume line gives way to the discs again; 0 = stays open
  *   styles:                             # one block per element, as in expressive-slider-card
  *     title:
  *       size: 14
@@ -36,16 +37,17 @@
  *       strength: 50                    # % opacity
  *
  * Elements: heading, name, toggle, source, card, hero, backdrop, logo, tile, badge, title, subtitle, progress, bar,
- * times, controls, disc, volume, channels, channel.
+ * times, controls, disc, speaker, volume, channels, channel.
  * Properties are CSS names; size, weight and colour are short for font-size, font-weight and color.
  * Bare numbers become px. Each block can also be a list of single properties.
  *
+ * The speaker disc at the right of the controls swaps the discs for the volume line, and back.
  * Tapping a channel tunes the TV to it (switching the TV to `live_source` first if needed).
  * The card hides itself while the TV is off or unavailable.
  */
 
 (() => {
-  const VERSION = "0.2.2";
+  const VERSION = "0.3.0";
   const OFF = new Set(["off", "unavailable", "unknown", "standby"]);
   const ACTIVE = new Set(["playing", "paused"]);
   const BBFC = new Set(["U", "PG", "12A", "12", "15", "18", "R18"]);
@@ -56,13 +58,14 @@
   const TUNE_DELAY_MS = 2500; // after switching input to live TV, before picking the channel
 
   const VOLUME_DEFAULTS = {
-    icon: "mdi:volume-high",
+    icon: false,
     glow: false,
     bubble: "drag",
     tap_action: { action: "none" },
     hold_action: { action: "more-info" },
     double_tap_action: { action: "none" },
-    styles: { card: { background: "transparent" }, header: { display: "none" }, track: { color: "rgb(201, 126, 11)" } },
+    styles: { card: { background: "transparent" }, header: { display: "none" },
+      track: { color: "rgb(201, 126, 11)", height: 8, radius: 4, "inner-radius": 2, gap: 4 } },
   };
 
   const TARGETS = {
@@ -70,7 +73,7 @@
     channels: ".channels", channel: ".channels .ch",
     card: "ha-card", hero: ".hero", backdrop: ".backdrop", logo: ".logo", tile: ".logo.tile", badge: ".badge",
     title: ".title", subtitle: ".sub", progress: ".progress", bar: ".progress i", times: ".times",
-    controls: ".controls", disc: ".disc", volume: ".volume",
+    controls: ".controls", disc: ".disc", speaker: ".spk", volume: ".volume",
   };
   const ALIASES = { size: "font-size", weight: "font-weight", colour: "color" };
   const UNITLESS = new Set(["font-weight", "opacity", "z-index", "line-height", "flex", "flex-grow", "flex-shrink", "order"]);
@@ -192,6 +195,7 @@
       this._stopTimer();
       this._stopEpg();
       clearTimeout(this._tuneTimer);
+      if (this._volOpen) this._setVolOpen(false);
     }
 
     _build() {
@@ -222,6 +226,7 @@
           <div class="row">
             <div class="controls"></div>
             <div class="volume"></div>
+            <button class="disc spk" type="button" aria-label="Volume" aria-pressed="false"><ha-icon icon="mdi:volume-high"></ha-icon></button>
           </div>
         </ha-card>
         <div class="channels" hidden><div class="list" role="list"></div></div>`;
@@ -229,7 +234,7 @@
       this._el = {
         backdrop: $(".backdrop"), blurred: $(".blurred"), logo: $(".logo"), badge: $(".badge"),
         title: $(".title"), sub: $(".sub"), progWrap: $(".prog-wrap"), bar: $(".progress i"),
-        t0: $(".t0"), t1: $(".t1"), controls: $(".controls"), volume: $(".volume"),
+        t0: $(".t0"), t1: $(".t1"), controls: $(".controls"), volume: $(".volume"), row: $(".row"), spk: $(".spk"),
         heading: $(".heading"), name: $(".heading .name"), tog: $(".heading .tog"), source: $(".heading .source"),
         channels: $(".channels"), list: $(".channels .list"),
       };
@@ -242,8 +247,25 @@
         const b = e.target.closest("button[data-n]");
         if (b) this._press(Number(b.dataset.n));
       });
+      this._el.spk.addEventListener("click", () => this._setVolOpen(!this._volOpen));
+      // Using the slider keeps it open.
+      for (const ev of ["pointerdown", "keydown"]) this._el.volume.addEventListener(ev, () => this._volOpen && this._armVolIdle());
       this._applyConfig();
       this._mountSlider();
+    }
+
+    _setVolOpen(open) {
+      this._volOpen = open;
+      this._el.row.classList.toggle("vol", open);
+      this._el.spk.setAttribute("aria-pressed", String(open));
+      if (open) this._armVolIdle();
+      else clearTimeout(this._volTimer);
+    }
+
+    _armVolIdle() {
+      clearTimeout(this._volTimer);
+      const s = Number(this._config.volume_idle ?? 10);
+      if (s > 0) this._volTimer = setTimeout(() => this._setVolOpen(false), s * 1000);
     }
 
     _applyConfig() {
@@ -654,15 +676,18 @@
     .times { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px;
              font-size: 11px; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
     [hidden] { display: none !important; }
-    .row { display: flex; align-items: center; gap: 8px; padding: 0 16px; }
+    /* The discs, or (after the speaker disc) the volume line; the speaker stays put at the right. */
+    .row { display: flex; align-items: center; gap: 16px; padding: 0 16px; min-height: 32px; }
     .controls { display: flex; gap: 8px; flex: none; }
-    .controls:empty { display: none; }
+    .row:not(.vol) .volume, .row.vol .controls { display: none; }
     .disc {
-      width: 40px; height: 40px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+      width: 32px; height: 32px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; flex: none;
       display: grid; place-items: center;
       background: var(--gray100, var(--card-background-color)); color: var(--primary-text-color);
-      --mdc-icon-size: 24px;
+      --mdc-icon-size: 20px; transition: background-color 150ms;
     }
+    .spk { margin-left: auto; }
+    .row.vol .spk { background: rgb(201, 126, 11); }
     .disc:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
     .volume { flex: 1; min-width: 0; }
   `;
